@@ -20,7 +20,6 @@ import com.czertainly.discovery.ip.service.ConnectionService;
 import com.czertainly.discovery.ip.service.DiscoveryHistoryService;
 import com.czertainly.discovery.ip.service.DiscoveryService;
 import com.czertainly.discovery.ip.util.DiscoverIpHandler;
-import com.pivovarit.collectors.ParallelCollectors;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,27 +28,40 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.DefaultTransactionDefinition;
 
+import java.io.IOException;
+import java.security.KeyManagementException;
+import java.security.NoSuchAlgorithmException;
 import java.security.cert.CertificateEncodingException;
 import java.security.cert.X509Certificate;
 import java.util.*;
-import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 @Service
 @Transactional
 public class DiscoveryServiceImpl implements DiscoveryService {
 
     private static final Logger logger = LoggerFactory.getLogger(DiscoveryServiceImpl.class);
+
+    private PlatformTransactionManager transactionManager;
+
     private ConnectionService connectionService;
     private CertificateRepository certificateRepository;
     private DiscoveryHistoryService discoveryHistoryService;
+
+    @Autowired
+    public void setTransactionManager(PlatformTransactionManager transactionManager) {
+        this.transactionManager = transactionManager;
+    }
 
     @Autowired
     public void setConnectionService(ConnectionService connectionService) {
@@ -80,7 +92,7 @@ public class DiscoveryServiceImpl implements DiscoveryService {
             dto.setTotalCertificatesDiscovered(0);
         } else {
             Pageable page = PageRequest.of(request.getPageNumber() <= 0 ? 0 : request.getPageNumber() - 1, request.getItemsPerPage(), Sort.by(Sort.Direction.ASC, "id"));
-            dto.setCertificateData(certificateRepository.findAllByDiscoveryId(history.getId(), page).stream().map(Certificate::mapToDto).collect(Collectors.toList()));
+            dto.setCertificateData(certificateRepository.findAllByDiscoveryId(history.getId(), page).stream().map(Certificate::mapToDto).toList());
         }
         return dto;
     }
@@ -95,6 +107,7 @@ public class DiscoveryServiceImpl implements DiscoveryService {
 
     @Override
     @Async
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
     public void discoverCertificate(DiscoveryRequestDto request, DiscoveryHistory history) throws NotFoundException {
         try {
             discoverCertificatesInternal(request, history);
@@ -106,7 +119,7 @@ public class DiscoveryServiceImpl implements DiscoveryService {
         }
     }
 
-    public void discoverCertificatesInternal(DiscoveryRequestDto request, DiscoveryHistory history) {
+    private void discoverCertificatesInternal(DiscoveryRequestDto request, DiscoveryHistory history) {
         logger.info("Discovery initiated for the request with name {}", request.getName());
         Set<String> urls = DiscoverIpHandler.getAllIp(request);
         AtomicInteger successUrlCount = new AtomicInteger(0);
@@ -114,48 +127,61 @@ public class DiscoveryServiceImpl implements DiscoveryService {
         AtomicInteger foundCertsCount = new AtomicInteger(0);
         Set<String> uniqueCerts = Collections.synchronizedSet(new HashSet<>()); // Thread-safe set
 
+        boolean failed = false;
+        List<Future<?>> futures = new ArrayList<>();
         int maxThreads = AttributeServiceImpl.getParallelExecutionsDataAttributeContentValue(request.getAttributes());
+        try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
+            TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
+            for (String url : urls) {
+                futures.add(executor.submit(() -> {
+                    logger.debug("Discovering certificate for {}", url);
+                    try {
+                        processCertificatesForUrl(url, history.getId(), uniqueCerts, foundCertsCount);
+                        successUrlCount.incrementAndGet();
+                    } catch (Exception e) {
+                        logger.error("Unable to process data or URL {}: {}", url, e.getMessage());
+                        failedUrlCount.incrementAndGet();
+                    }
+                }));
 
-        ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor();
-
-        try {
-            Stream<String> urlStream = urls.stream();
-            CompletableFuture<Stream<Object>> future = urlStream.collect(
-                    ParallelCollectors.parallel(
-                            url -> {
-                                logger.debug("Discovering certificate for {}", url);
-                                try {
-                                    processCertificatesForUrl(url, history.getId(), uniqueCerts, foundCertsCount);
-                                    successUrlCount.incrementAndGet();
-                                } catch (Exception e) {
-                                    logger.error("Unable to process data or URL {}: {}", url, e.getMessage());
-                                    failedUrlCount.incrementAndGet();
-                                }
-                                return null; // Return null to satisfy the return type
-                            },
-                            executor,
-                            maxThreads
-                    )
-            );
-
-            // Wait for all tasks to complete
-            future.join();
+                if (futures.size() == maxThreads) {
+                    status = commitDiscoveredCertsBatch(status, futures, history.getName(), true);
+                }
+            }
+            if (!futures.isEmpty()) {
+                commitDiscoveredCertsBatch(status, futures, history.getName(), false);
+            }
         } catch (Exception e) {
+            failed = true;
             logger.error("An error occurred during discovery: {}", e.getMessage());
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
         } finally {
-            executor.shutdown();
-        }
+            TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
 
-        logger.info("Discovery {} has total of {} certificates, {} unique, from {} sources", request.getName(), foundCertsCount.get(), uniqueCerts.size(), urls.size());
-        history.setStatus(DiscoveryStatus.COMPLETED);
-        history.setMeta(AttributeDefinitionUtils.serialize(getDiscoveryMetadata(urls.size(), successUrlCount.get(), failedUrlCount.get())));
-        discoveryHistoryService.setHistory(history);
-        logger.info("Discovery Completed. Name of the discovery is {}", request.getName());
+            logger.info("Discovery {} has total of {} certificates, {} unique, from {} sources", request.getName(), foundCertsCount.get(), uniqueCerts.size(), urls.size());
+            history.setStatus(failed ? DiscoveryStatus.FAILED : DiscoveryStatus.COMPLETED);
+            history.setMeta(AttributeDefinitionUtils.serialize(getDiscoveryMetadata(urls.size(), successUrlCount.get(), failedUrlCount.get())));
+            discoveryHistoryService.setHistory(history);
+            logger.info("Discovery Completed. Name of the discovery is {}", request.getName());
+            transactionManager.commit(status);
+        }
     }
 
+    private TransactionStatus commitDiscoveredCertsBatch(TransactionStatus status, List<Future<?>> futures, String discoveryName, boolean createNewTransaction) throws ExecutionException, InterruptedException {
+        logger.debug("Waiting for {} URL discovery tasks for discovery {}", futures.size(), discoveryName);
+        for (Future<?> future : futures) {
+            future.get();
+        }
+        logger.debug("{} URL discovery tasks for discovery {} finished", futures.size(), discoveryName);
+        futures.clear();
+        transactionManager.commit(status);
 
-    @Transactional(propagation = Propagation.REQUIRES_NEW, rollbackFor = Exception.class)
-    public void processCertificatesForUrl(String url, Long historyId, Set<String> uniqueCerts, AtomicInteger foundCertsCount) throws Exception {
+        return createNewTransaction ? transactionManager.getTransaction(new DefaultTransactionDefinition()) : null;
+    }
+
+    private void processCertificatesForUrl(String url, Long historyId, Set<String> uniqueCerts, AtomicInteger foundCertsCount) throws IOException, NoSuchAlgorithmException, KeyManagementException, CertificateEncodingException {
         ConnectionResponse connection = connectionService.getCertificates(url);
         logger.debug("Connection to the url success. Certificates obtained");
         X509Certificate[] certificates = connection.getCertificates();

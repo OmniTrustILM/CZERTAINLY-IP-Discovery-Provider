@@ -100,7 +100,7 @@ public class DiscoverIpHandler {
         // use a Set to avoid duplicate values
         Set<String> portNumbers = new HashSet<>();
 
-        if (allPorts) {
+        if (Boolean.TRUE.equals(allPorts)) {
             for (int i = 0; i < 65535; i++) {
                 portNumbers.add(String.valueOf(i));
             }
@@ -131,7 +131,7 @@ public class DiscoverIpHandler {
      * @return set of URLs
      */
     public static Set<String> buildUrls(Set<String> ipsInRange, Set<String> applicablePorts) {
-        Set<String> urls = new HashSet<>();
+        Set<String> urls = new TreeSet<>();
         for (String ip : ipsInRange) {
             for (String port : applicablePorts) {
                 urls.add("https://" + ip + ":" + port);
