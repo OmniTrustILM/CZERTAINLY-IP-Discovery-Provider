@@ -128,10 +128,11 @@ public class DiscoveryServiceImpl implements DiscoveryService {
         Set<String> uniqueCerts = Collections.synchronizedSet(new HashSet<>()); // Thread-safe set
 
         boolean failed = false;
+        TransactionStatus status = null;
         List<Future<?>> futures = new ArrayList<>();
         int maxThreads = AttributeServiceImpl.getParallelExecutionsDataAttributeContentValue(request.getAttributes());
         try (ExecutorService executor = Executors.newVirtualThreadPerTaskExecutor()) {
-            TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
+            status = transactionManager.getTransaction(new DefaultTransactionDefinition());
             for (String url : urls) {
                 futures.add(executor.submit(() -> {
                     logger.debug("Discovering certificate for {}", url);
@@ -158,7 +159,9 @@ public class DiscoveryServiceImpl implements DiscoveryService {
                 Thread.currentThread().interrupt();
             }
         } finally {
-            TransactionStatus status = transactionManager.getTransaction(new DefaultTransactionDefinition());
+            if (status == null || status.isCompleted()) {
+                status = transactionManager.getTransaction(new DefaultTransactionDefinition());
+            }
 
             logger.info("Discovery {} has total of {} certificates, {} unique, from {} sources", request.getName(), foundCertsCount.get(), uniqueCerts.size(), urls.size());
             history.setStatus(failed ? DiscoveryStatus.FAILED : DiscoveryStatus.COMPLETED);
