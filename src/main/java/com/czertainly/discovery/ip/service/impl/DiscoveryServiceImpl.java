@@ -146,11 +146,11 @@ public class DiscoveryServiceImpl implements DiscoveryService {
                 }));
 
                 if (futures.size() == maxThreads) {
-                    status = commitDiscoveredCertsBatch(status, futures, history.getName(), true);
+                    status = commitDiscoveredCertsBatch(status, futures, history.getName());
                 }
             }
             if (!futures.isEmpty()) {
-                commitDiscoveredCertsBatch(status, futures, history.getName(), false);
+                status = commitDiscoveredCertsBatch(status, futures, history.getName());
             }
         } catch (Exception e) {
             failed = true;
@@ -172,7 +172,7 @@ public class DiscoveryServiceImpl implements DiscoveryService {
         }
     }
 
-    private TransactionStatus commitDiscoveredCertsBatch(TransactionStatus status, List<Future<?>> futures, String discoveryName, boolean createNewTransaction) throws ExecutionException, InterruptedException {
+    private TransactionStatus commitDiscoveredCertsBatch(TransactionStatus status, List<Future<?>> futures, String discoveryName) throws ExecutionException, InterruptedException {
         logger.debug("Waiting for {} URL discovery tasks for discovery {}", futures.size(), discoveryName);
         for (Future<?> future : futures) {
             future.get();
@@ -181,7 +181,7 @@ public class DiscoveryServiceImpl implements DiscoveryService {
         futures.clear();
         transactionManager.commit(status);
 
-        return createNewTransaction ? transactionManager.getTransaction(new DefaultTransactionDefinition()) : null;
+        return transactionManager.getTransaction(new DefaultTransactionDefinition());
     }
 
     private void processCertificatesForUrl(String url, Long historyId, Set<String> uniqueCerts, AtomicInteger foundCertsCount) throws IOException, NoSuchAlgorithmException, KeyManagementException, CertificateEncodingException {
