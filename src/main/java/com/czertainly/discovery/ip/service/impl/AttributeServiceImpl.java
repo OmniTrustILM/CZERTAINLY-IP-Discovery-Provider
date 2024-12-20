@@ -100,7 +100,7 @@ public class AttributeServiceImpl implements AttributeService {
 
     public static final String DATA_ATTRIBUTE_PARALLEL_EXECUTIONS_UUID = "1517c7a5-34cb-4f94-a0aa-1e9fe5b5b277";
     public static final String DATA_ATTRIBUTE_PARALLEL_EXECUTIONS_NAME = "data_parallel_executions";
-    public static final String DATA_ATTRIBUTE_PARALLEL_EXECUTIONS_DESCRIPTION = "Number of parallel executions of the discovery process. Default is 1 and maximum is 1000.";
+    public static final String DATA_ATTRIBUTE_PARALLEL_EXECUTIONS_DESCRIPTION = "Number of parallel executions of the discovery process. Default is 1 and maximum is 100.";
     public static final String DATA_ATTRIBUTE_PARALLEL_EXECUTIONS_LABEL = "Number of parallel executions";
     public static final IntegerAttributeContent DATA_ATTRIBUTE_PARALLEL_EXECUTIONS_DEFAULT_CONTENT =
             new IntegerAttributeContent(1);
@@ -250,10 +250,10 @@ public class AttributeServiceImpl implements AttributeService {
         RangeAttributeConstraint rangeAttributeConstraint = new RangeAttributeConstraint();
         RangeAttributeConstraintData rangeData = new RangeAttributeConstraintData();
         rangeData.setFrom(1);
-        rangeData.setTo(1000);
+        rangeData.setTo(100);
         rangeAttributeConstraint.setData(rangeData);
         rangeAttributeConstraint.setDescription("Allowed values for parallel executions");
-        rangeAttributeConstraint.setErrorMessage("Invalid value for parallel executions, it can be between 1 and 1000");
+        rangeAttributeConstraint.setErrorMessage("Invalid value for parallel executions, it can be between 1 and 100");
 
         attribute.setConstraints(List.of(rangeAttributeConstraint));
 
