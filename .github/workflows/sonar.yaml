@@ -10,7 +10,16 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     if: github.event.workflow_run.conclusion == 'success'
+    env:
+      HEAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
     steps:
+      # Create a temporary directory for artifacts
+      - run: mkdir -p ${{ runner.temp }}/artifacts/
       # Download the PR number artifact
       - name: Download PR number
         uses: actions/download-artifact@v4
@@ -18,11 +27,11 @@ jobs:
           name: pr-number
           github-token: ${{ secrets.GITHUB_TOKEN }}
           run-id: ${{ github.event.workflow_run.id }}
-          path: .
+          path: ${{ runner.temp }}/artifacts/
       # Read the PR number from the file and store it in 'steps.pr_number.outputs.content'
       - name: Read PR number from file
         id: pr_number
-        run: echo "content=$(cat pr-number.txt)" >> $GITHUB_OUTPUT
+        run: echo "content=$(cat ${{ runner.temp }}/artifacts/pr-number.txt)" >> $GITHUB_OUTPUT
       # Request GitHub API for PR data
       - name: Request GitHub API for PR data
         if: github.event.workflow_run.event == 'pull_request'
@@ -45,7 +54,7 @@ jobs:
           git remote add upstream ${{ github.event.repository.clone_url }}
           git fetch upstream
           git checkout -B ${{ fromJson(steps.get_pr_data.outputs.data).base.ref }} upstream/${{ fromJson(steps.get_pr_data.outputs.data).base.ref }}
-          git checkout ${{ github.event.workflow_run.head_branch }}
+          git checkout $HEAD_BRANCH
           git clean -ffdx && git reset --hard HEAD
       # Download compiled classes
       - name: Download Compiled Classes
@@ -68,9 +77,13 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_REVISION: ${{ github.event.workflow_run.head_sha }}
+          SONAR_PR_KEY: ${{ fromJson(steps.get_pr_data.outputs.data).number }}
+          SONAR_PR_BRANCH: ${{ fromJson(steps.get_pr_data.outputs.data).head.ref }}
+          SONAR_PR_BASE: ${{ fromJson(steps.get_pr_data.outputs.data).base.ref }}
         run: |
           mvn org.sonarsource.scanner.maven:sonar-maven-plugin:sonar \
-            -Dsonar.scm.revision=${{ github.event.workflow_run.head_sha }} \
-            -Dsonar.pullrequest.key=${{ fromJson(steps.get_pr_data.outputs.data).number }} \
-            -Dsonar.pullrequest.branch=${{ fromJson(steps.get_pr_data.outputs.data).head.ref }} \
-            -Dsonar.pullrequest.base=${{ fromJson(steps.get_pr_data.outputs.data).base.ref }}
+            -Dsonar.scm.revision=$SONAR_REVISION \
+            -Dsonar.pullrequest.key=$SONAR_PR_KEY \
+            -Dsonar.pullrequest.branch=$SONAR_PR_BRANCH \
+            -Dsonar.pullrequest.base=$SONAR_PR_BASE

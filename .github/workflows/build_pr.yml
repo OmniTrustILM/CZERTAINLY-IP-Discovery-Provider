@@ -8,6 +8,11 @@ jobs:
     if: github.event_name != 'push'
     name: Build
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      packages: read
+      security-events: write
     steps:
       - uses: actions/checkout@v4
         with:
